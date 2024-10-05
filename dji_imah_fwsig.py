@@ -24,7 +24,6 @@ to decrypt its content.
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from __future__ import print_function
 __version__ = "0.3.1"
 __author__ = "Freek van Tienen, Jan Dumon, Mefistotelis @ Original Gangsters"
 __license__ = "GPL"
@@ -33,7 +32,6 @@ import sys
 import re
 import os
 import argparse
-import binascii
 import configparser
 import itertools
 from Crypto.Cipher import AES
@@ -42,12 +40,11 @@ from Crypto.Hash import SHA256
 from Crypto.PublicKey import RSA
 from Crypto.Signature import PKCS1_v1_5
 from Crypto.Signature import pss
-from ctypes import *
+from ctypes import c_char, c_int, c_ubyte, c_uint, c_ulonglong
+from ctypes import memmove, sizeof, addressof, Array, LittleEndianStructure
 from collections import OrderedDict
 from time import gmtime, strftime, strptime
-from calendar import timegm
 from copy import copy
-from os.path import basename
 
 # All found keys
 keys = {
@@ -120,6 +117,11 @@ keys = {
         # RCSS170 FW V01.01.0000,
         0x48, 0xd6, 0xe8, 0xff, 0x1b, 0x7f, 0x20, 0x6e, 0x2d, 0xa7, 0x99, 0xc2, 0x7e, 0x5a, 0xd7, 0x0d
     ]),
+    "TBIE-2020-02":  bytes([ # Trusted Kernel Image Encryption key; published 2021-11-19 by OGs
+        # first use on 2021-06-15; used for:
+        # WM230 FW (versions untested), WM232 (untested), PM430 (untested)
+        0x7b, 0xca, 0x59, 0x6f, 0x22, 0x73, 0xc5, 0x19, 0x5e, 0x41, 0x42, 0xaa, 0x3d, 0x20, 0x1e, 0x25
+    ]),
     "TBIE-2019-11":  bytes([ # Trusted Boot Image Encryption key; published 2021-03-26 by Felix Domke
         # first use on 2019-11-07; used for:
         # WM160 FW V01.00.0200-V01.00.0500, WM161 FW V01.00.0000-V01.02.0300
@@ -149,7 +151,8 @@ keys = {
     ]),
     "UFIE-2019-11":  bytes([ # Update Firmware Image Encryption key; published 2021-03-26 by Felix Domke
         # first use on 2019-11-07; used for:
-        # WM160 FW V01.00.0200-V01.00.0500, WM161 FW V01.00.0000-V01.02.0300
+        # WM160 FW V01.00.0200-V01.00.0500, WM161 FW V01.00.0000-V01.02.0300,
+        # WM1615 FW V01.00.0360 
         0xad, 0x45, 0xcd, 0x82, 0x13, 0xfb, 0x7e, 0x25, 0x5d, 0xbe, 0x45, 0x41, 0x70, 0xbc, 0x11, 0xa0
     ]),
     "UFIE-2018-07":  bytes([ # Update Firmware Image Encryption key; published 2021-06-20 by OGs
@@ -220,6 +223,7 @@ keys = {
     "PRAK-2019-09":  bytes.fromhex(( # Provisioning RSA Auth Key v5; published 2021-04-02 by Felix Domke
         # first use on 2020-06-09; used for:
         # WM161 FW V01.00.0000
+        # WM1615 FW V01.00.0360
         "40000000a1f987bf9fd539732277b64b32f178d7a62106d20336f2888292ee28"
         "3790524565232831d245919a3a88d92a754cafbb1b8ccaed67dec3a29e0f425b"
         "28cda10838a170227343eec744f78f3b5d19e9823a08fe6ee539fa7c0538e498"
@@ -384,45 +388,50 @@ RwjPBAdCSsU/99luMlK77z0=
 -----END PRIVATE KEY-----""",
 }
 
+
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
+
 
 class PlainCopyCipher:
     def encrypt(self, plaintext):
         return plaintext
+
     def decrypt(self, ciphertext):
         return ciphertext
 
+
 class ImgPkgHeader(LittleEndianStructure):
     _pack_ = 1
-    _fields_ = [('magic', c_char * 4),              #0 'IM*H'
-                ('header_version', c_uint),         #4
-                ('size', c_uint),                   #8
-                ('reserved', c_ubyte * 4),          #12
-                ('header_size', c_uint),            #16 Length of this header and following chunk headers
-                ('signature_size', c_uint),         #20 Length of RSA signature located after chunk headers
-                ('payload_size', c_uint),           #24 Length of the area after signature which contains data of all chunks
-                ('target_size', c_uint),            #28
-                ('os', c_ubyte),                    #32
-                ('arch', c_ubyte),                  #33
-                ('compression', c_ubyte),           #34
-                ('anti_version', c_ubyte),          #35
-                ('auth_alg', c_uint),               #36
-                ('auth_key', c_char * 4),           #40 Auth key identifier
-                ('enc_key', c_char * 4),            #44 Encryption key identifier
-                ('scram_key', c_ubyte * 16),        #48 Encrypted Scramble key; used in versions > 0
-                ('name', c_char * 32),              #64 Target Module name
-                ('type', c_char * 4),               #96 Target Module type identifier; used in versions > 1
-                ('version', c_uint),                #100
-                ('date', c_uint),                   #104
-                ('encr_cksum', c_uint),             #108 Checksum of encrypted data; used in versions > 1
-                ('reserved2', c_ubyte * 16),        #112
-                ('userdata', c_char * 16),          #128
-                ('entry', c_ubyte * 8),             #144
-                ('plain_cksum', c_uint),            #152 Checksum of decrypted (plaintext) data; used in versions > 1
-                ('chunk_num', c_uint),              #156 Amount of chunks
-                ('payload_digest', c_ubyte * 32),   #160 SHA256 of the payload
-               ]                                    #192 is the end; chunk headers start after that
+    _fields_ = [
+        ('magic', c_char * 4),              # 0 'IM*H'
+        ('header_version', c_uint),         # 4
+        ('size', c_uint),                   # 8
+        ('reserved', c_ubyte * 4),          # 12
+        ('header_size', c_uint),            # 16 Length of this header and following chunk headers
+        ('signature_size', c_uint),         # 20 Length of RSA signature located after chunk headers
+        ('payload_size', c_uint),           # 24 Length of the area after signature which contains data of all chunks
+        ('target_size', c_uint),            # 28
+        ('os', c_ubyte),                    # 32
+        ('arch', c_ubyte),                  # 33
+        ('compression', c_ubyte),           # 34
+        ('anti_version', c_ubyte),          # 35
+        ('auth_alg', c_uint),               # 36
+        ('auth_key', c_char * 4),           # 40 Auth key identifier
+        ('enc_key', c_char * 4),            # 44 Encryption key identifier
+        ('scram_key', c_ubyte * 16),        # 48 Encrypted Scramble key; used in versions > 0
+        ('name', c_char * 32),              # 64 Target Module name
+        ('type', c_char * 4),               # 96 Target Module type identifier; used in versions > 1
+        ('version', c_uint),                # 100
+        ('date', c_uint),                   # 104
+        ('encr_cksum', c_uint),             # 108 Checksum of encrypted data; used in versions > 1
+        ('reserved2', c_ubyte * 16),        # 112
+        ('userdata', c_char * 16),          # 128
+        ('entry', c_ubyte * 8),             # 144
+        ('plain_cksum', c_uint),            # 152 Checksum of decrypted (plaintext) data; used in versions > 1
+        ('chunk_num', c_uint),              # 156 Amount of chunks
+        ('payload_digest', c_ubyte * 32),   # 160 SHA256 of the payload
+    ]                                       # 192 is the end; chunk headers start after that
 
     def get_format_version(self):
         if self.magic != bytes("IM*H", "utf-8"):
@@ -479,33 +488,35 @@ class ImgPkgHeader(LittleEndianStructure):
         fp.write("# DJI Firmware Signer main header file.\n")
         fp.write(strftime("# Generated on %Y-%m-%d %H:%M:%S\n", gmtime()))
         varkey = 'name'
-        fp.write("{:s}={:s}\n".format(varkey,d[varkey]))
+        fp.write("{:s}={:s}\n".format(varkey, d[varkey]))
         varkey = 'pkg_format'
-        fp.write("{:s}={:d}\n".format(varkey,self.get_format_version()))
+        fp.write("{:s}={:d}\n".format(varkey, self.get_format_version()))
         varkey = 'version'
-        fp.write("{:s}={:02d}.{:02d}.{:02d}.{:02d}\n".format(varkey, (d[varkey]>>24)&255, (d[varkey]>>16)&255, (d[varkey]>>8)&255, (d[varkey])&255))
+        fp.write("{:s}={:02d}.{:02d}.{:02d}.{:02d}\n".format(varkey,
+          (d[varkey] >> 24) & 255, (d[varkey] >> 16) & 255, (d[varkey] >> 8) & 255, (d[varkey]) & 255))
         varkey = 'anti_version'
-        fp.write("{:s}={:02d}.{:02d}.{:02d}.{:02d}\n".format(varkey, (d[varkey]>>24)&255, (d[varkey]>>16)&255, (d[varkey]>>8)&255, (d[varkey])&255))
+        fp.write("{:s}={:02d}.{:02d}.{:02d}.{:02d}\n".format(varkey,
+          (d[varkey] >> 24) & 255, (d[varkey] >> 16) & 255, (d[varkey] >> 8) & 255, (d[varkey]) & 255))
         varkey = 'date'
-        fp.write("{:s}={:s}\n".format(varkey,strftime("%Y-%m-%d",strptime("{:x}".format(d[varkey]), '%Y%m%d'))))
+        fp.write("{:s}={:s}\n".format(varkey, strftime("%Y-%m-%d", strptime("{:x}".format(d[varkey]), '%Y%m%d'))))
         varkey = 'enc_key'
-        fp.write("{:s}={:s}\n".format(varkey,d[varkey]))
+        fp.write("{:s}={:s}\n".format(varkey, d[varkey]))
         varkey = 'auth_alg'
-        fp.write("{:s}={:d}\n".format(varkey,d[varkey]))
+        fp.write("{:s}={:d}\n".format(varkey, d[varkey]))
         varkey = 'auth_key'
-        fp.write("{:s}={:s}\n".format(varkey,d[varkey]))
+        fp.write("{:s}={:s}\n".format(varkey, d[varkey]))
         varkey = 'os'
-        fp.write("{:s}={:d}\n".format(varkey,d[varkey]))
+        fp.write("{:s}={:d}\n".format(varkey, d[varkey]))
         varkey = 'arch'
-        fp.write("{:s}={:d}\n".format(varkey,d[varkey]))
+        fp.write("{:s}={:d}\n".format(varkey, d[varkey]))
         varkey = 'compression'
-        fp.write("{:s}={:d}\n".format(varkey,d[varkey]))
+        fp.write("{:s}={:d}\n".format(varkey, d[varkey]))
         varkey = 'type'
-        fp.write("{:s}={:s}\n".format(varkey,d[varkey]))
+        fp.write("{:s}={:s}\n".format(varkey, d[varkey]))
         varkey = 'userdata'
-        fp.write("{:s}={:s}\n".format(varkey,d[varkey].decode("utf-8"))) # not sure if string or binary
+        fp.write("{:s}={:s}\n".format(varkey, d[varkey].decode("utf-8"))) # not sure if string or binary
         varkey = 'entry'
-        fp.write("{:s}={:s}\n".format(varkey,''.join("{:02X}".format(x) for x in d[varkey])))
+        fp.write("{:s}={:s}\n".format(varkey, ''.join("{:02X}".format(x) for x in d[varkey])))
         #varkey = 'scram_key' # we will add the key later, as this one is encrypted
         #fp.write("{:s}={:s}\n".format(varkey,"".join("{:02X}".format(x) for x in d[varkey])))
 
@@ -517,13 +528,14 @@ class ImgPkgHeader(LittleEndianStructure):
 
 class ImgChunkHeader(LittleEndianStructure):
     _pack_ = 1
-    _fields_ = [('id', c_char * 4),          #0
-                ('offset', c_uint),          #4
-                ('size', c_uint),            #8
-                ('attrib', c_uint),          #12
-                ('address', c_ulonglong),    #16
-                ('reserved', c_ubyte * 8),   #24
-               ]                             #32 is the end
+    _fields_ = [
+        ('id', c_char * 4),          # 0
+        ('offset', c_uint),          # 4
+        ('size', c_uint),            # 8
+        ('attrib', c_uint),          # 12
+        ('address', c_ulonglong),    # 16
+        ('reserved', c_ubyte * 8),   # 24
+    ]                                # 32 is the end
 
     def dict_export(self):
         d = OrderedDict()
@@ -560,12 +572,13 @@ class ImgChunkHeader(LittleEndianStructure):
 
 class ImgRSAPublicKey(LittleEndianStructure):
     _pack_ = 1
-    _fields_ = [('len', c_int),      # 0: Length of n[] in number of uint32_t
-                ('n0inv', c_uint),   # 4: -1 / n[0] mod 2^32
-                ('n', c_uint * 64),  # 8: modulus as little endian array
-                ('rr', c_uint * 64), # 264: R^2 as little endian array
-                ('exponent', c_int)] # 520: 3 or 65537
-
+    _fields_ = [
+        ('len', c_int),      # 0: Length of n[] in number of uint32_t
+        ('n0inv', c_uint),   # 4: -1 / n[0] mod 2^32
+        ('n', c_uint * 64),  # 8: modulus as little endian array
+        ('rr', c_uint * 64), # 264: R^2 as little endian array
+        ('exponent', c_int), # 520: 3 or 65537
+    ]
 
 def raise_or_warn(po, ex):
     """ Raise exception, unless force-continue parameter was used.
@@ -624,7 +637,8 @@ def get_key_data(po, pkghead, enc_k_fourcc):
         # (the key needs to be selected based of FW package version, we only have FW module version)
         enc_k_select = key_list[0]
         if (po.show_multiple_keys_warn):
-            eprint("{}: Warning: '{:s}' matches multiple keys; using first, '{:s}'".format(po.sigfile,enc_k_str,enc_k_select))
+            eprint("{}: Warning: '{:s}' matches multiple keys; using first, '{:s}'"
+              .format(po.sigfile, enc_k_str, enc_k_select))
             eprint("{}: Key choices: {:s}".format(po.sigfile,", ".join(key_list)))
             po.show_multiple_keys_warn = False
 
@@ -634,15 +648,23 @@ def get_key_data(po, pkghead, enc_k_fourcc):
         enc_key = None
     return enc_key
 
+
 def imah_get_crypto_params(po, pkghead):
     # Get the encryption key
     enc_k_str = pkghead.enc_key.decode("utf-8")
-    enc_key = get_key_data(po, pkghead, enc_k_str)
+    if enc_k_str != '':
+        enc_key = get_key_data(po, pkghead, enc_k_str)
+    else:
+        enc_key = bytes()
     if enc_key is None:
         eprint("{}: Warning: Cannot find enc_key '{:s}'".format(po.sigfile,enc_k_str))
         return (None, None, None)
     # Prepare initial values for AES
-    if   pkghead.header_version == 2:
+    if len(enc_key) == 0:
+        crypt_mode = AES.MODE_CBC
+        crypt_key = enc_key
+        crypt_iv = bytes(pkghead.scram_key)
+    elif pkghead.header_version == 2:
         if (po.verbose > 3):
             print("Key encryption key:\n{:s}".format(' '.join("{:02X}".format(x) for x in enc_key)))
         crypt_mode = AES.MODE_CTR
@@ -667,6 +689,7 @@ def imah_get_crypto_params(po, pkghead):
         crypt_iv = bytes(pkghead.scram_key)
     return (crypt_key, crypt_mode, crypt_iv)
 
+
 def imah_get_auth_params(po, pkghead):
     # Get the key
     auth_k_str = pkghead.auth_key.decode("utf-8")
@@ -686,6 +709,7 @@ def imah_get_auth_params(po, pkghead):
         return (None)
     return (auth_key)
 
+
 def imah_compute_checksum(po, buf, start = 0):
     cksum = start
     for i in range(0, len(buf) // 4):
@@ -698,6 +722,7 @@ def imah_compute_checksum(po, buf, start = 0):
         v = int.from_bytes(last_buf[:4], byteorder='little')
         cksum += v
     return (cksum) & ((2 ** 32) - 1)
+
 
 def imah_write_fwsig_head(po, pkghead, minames):
     fname = "{:s}_head.ini".format(po.mdprefix)
@@ -717,6 +742,7 @@ def imah_write_fwsig_head(po, pkghead, minames):
     fwheadfile.write("{:s}={:s}\n".format('modules',' '.join(minames)))
     fwheadfile.close()
 
+
 def imah_read_fwsig_head(po):
     pkghead = ImgPkgHeader()
     fname = "{:s}_head.ini".format(po.mdprefix)
@@ -733,18 +759,32 @@ def imah_read_fwsig_head(po):
     pkghead.userdata = bytes(parser.get("asection", "userdata"), "utf-8")
     # The only person at Dji who knew how to store dates must have been fired
     date_val = strptime(parser.get("asection", "date"),"%Y-%m-%d")
-    pkghead.date = ((date_val.tm_year // 1000) << 28) | (((date_val.tm_year % 1000) // 100) << 24) | \
-            (((date_val.tm_year % 100) // 10) << 20) | ((date_val.tm_year % 10) << 16) | \
-            ((date_val.tm_mon // 10) << 12) | ((date_val.tm_mon % 10) << 8) | \
-            ((date_val.tm_mday // 10) << 4) | (date_val.tm_mday % 10)
+    pkghead.date = (
+        ((date_val.tm_year // 1000) << 28) |
+        (((date_val.tm_year % 1000) // 100) << 24) |
+        (((date_val.tm_year % 100) // 10) << 20) |
+        ((date_val.tm_year % 10) << 16) |
+        ((date_val.tm_mon // 10) << 12) |
+        ((date_val.tm_mon % 10) << 8) |
+        ((date_val.tm_mday // 10) << 4) |
+        (date_val.tm_mday % 10)
+    )
     version_s = parser.get("asection", "version")
     version_m = re.search('(?P<major>[0-9]+)[.](?P<minor>[0-9]+)[.](?P<build>[0-9]+)[.](?P<rev>[0-9]+)', version_s)
-    pkghead.version = ((int(version_m.group("major"),10)&0xff)<<24) + ((int(version_m.group("minor"),10)&0xff)<<16) + \
-            ((int(version_m.group("build"),10)&0xff)<<8) + ((int(version_m.group("rev"),10)&0xff))
+    pkghead.version = (
+        ((int(version_m.group("major"), 10) & 0xff) << 24) +
+        ((int(version_m.group("minor"), 10) & 0xff) << 16) +
+        ((int(version_m.group("build"), 10) & 0xff) << 8) +
+        ((int(version_m.group("rev"), 10) & 0xff))
+    )
     anti_version_s = parser.get("asection", "anti_version")
     anti_version_m = re.search('(?P<major>[0-9]+)[.](?P<minor>[0-9]+)[.](?P<build>[0-9]+)[.](?P<rev>[0-9]+)', anti_version_s)
-    pkghead.anti_version = ((int(anti_version_m.group("major"),10)&0xff)<<24) + ((int(anti_version_m.group("minor"),10)&0xff)<<16) + \
-            ((int(anti_version_m.group("build"),10)&0xff)<<8) + ((int(anti_version_m.group("rev"),10)&0xff))
+    pkghead.anti_version = (
+        ((int(anti_version_m.group("major"), 10) & 0xff) << 24) +
+        ((int(anti_version_m.group("minor"), 10) & 0xff) << 16) +
+        ((int(anti_version_m.group("build"), 10) & 0xff) << 8) +
+        ((int(anti_version_m.group("rev"), 10) & 0xff))
+    )
     pkghead.enc_key = bytes(parser.get("asection", "enc_key"), "utf-8")
     pkghead.auth_key = bytes(parser.get("asection", "auth_key"), "utf-8")
     pkghead.auth_alg = int(parser.get("asection", "auth_alg"))
@@ -774,9 +814,11 @@ def imah_read_fwsig_head(po):
             scramble_key = bytes.fromhex(parser.get("asection", "scramble_key_encrypted"))
 
         if scramble_key is not None:
-            pkghead.scram_key = (c_ubyte * len(scramble_key)).from_buffer_copy(scramble_key)
+            if len(scramble_key) > 0:
+                pkghead.scram_key = (c_ubyte * len(scramble_key)).from_buffer_copy(scramble_key)
         else:
-            eprint("{}: Warning: Scramble key not found in header and not set to ramdom; zeros will be used.".format(po.sigfile))
+            eprint("{}: Warning: Scramble key not found in header and not set to ramdom; zeros will be used."
+              .format(po.sigfile))
 
     minames_s = parser.get("asection", "modules")
     minames = minames_s.split(' ')
@@ -792,13 +834,15 @@ def imah_read_fwsig_head(po):
         enc_k_str = pkghead.enc_key.decode("utf-8")
         enc_key = get_key_data(po, pkghead, enc_k_str)
         if enc_key is None:
-            eprint("{}: Warning: Cannot find enc_key '{:s}'; scramble key left unencrypted.".format(fwsigfile.name,enc_k_str))
+            eprint("{}: Warning: Cannot find enc_key '{:s}'; scramble key left unencrypted."
+              .format(po.sigfile,enc_k_str))
         else:
             cipher = AES.new(enc_key, AES.MODE_CBC, bytes([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]))
             crypt_key_enc = cipher.encrypt(bytes(pkghead.scram_key))
             pkghead.scram_key = (c_ubyte * 16)(*list(crypt_key_enc))
 
     return (pkghead, minames, pkgformat)
+
 
 def imah_write_fwentry_head(po, i, e, miname, can_decrypt):
     fname = "{:s}_{:s}.ini".format(po.mdprefix,miname)
@@ -807,6 +851,7 @@ def imah_write_fwentry_head(po, i, e, miname, can_decrypt):
     if not can_decrypt: # If we're exporting without decryption, we must retain decrypted size
         fwheadfile.write("{:s}={:s}\n".format('size',"{:d}".format(e.size)))
     fwheadfile.close()
+
 
 def imah_read_fwentry_head(po, i, miname):
     chunk = ImgChunkHeader()
@@ -828,6 +873,7 @@ def imah_read_fwentry_head(po, i, miname):
     del parser
     return (chunk)
 
+
 def imah_unsign(po, fwsigfile):
 
     # Decode the image header
@@ -841,20 +887,25 @@ def imah_unsign(po, fwsigfile):
         raise_or_warn(po, ValueError("Unexpected magic value in main header; input file is not a signed image."))
 
     if pkghead.size != pkghead.target_size:
-        eprint("{}: Warning: Header field 'size' is different that 'target_size'; the tool is not designed to handle this.".format(fwsigfile.name))
+        eprint("{}: Warning: Header field 'size' is different that 'target_size'; the tool is not designed to handle this."
+          .format(fwsigfile.name))
 
     if not all(v == 0 for v in pkghead.reserved):
-        eprint("{}: Warning: Header field 'reserved' is non-zero; the tool is not designed to handle this.".format(fwsigfile.name))
+        eprint("{}: Warning: Header field 'reserved' is non-zero; the tool is not designed to handle this."
+          .format(fwsigfile.name))
 
     if not all(v == 0 for v in pkghead.reserved2):
-        eprint("{}: Warning: Header field 'reserved2' is non-zero; the tool is not designed to handle this.".format(fwsigfile.name))
+        eprint("{}: Warning: Header field 'reserved2' is non-zero; the tool is not designed to handle this."
+          .format(fwsigfile.name))
 
     if pkgformat < 2018:
         if pkghead.encr_cksum != 0:
-            eprint("{}: Warning: Header field 'encr_cksum' is non-zero; this is only allowed in newer formats.".format(fwsigfile.name))
+            eprint("{}: Warning: Header field 'encr_cksum' is non-zero; this is only allowed in newer formats."
+              .format(fwsigfile.name))
 
         if pkghead.plain_cksum != 0:
-            eprint("{}: Warning: Header field 'plain_cksum' is non-zero; this is only allowed in newer formats.".format(fwsigfile.name))
+            eprint("{}: Warning: Header field 'plain_cksum' is non-zero; this is only allowed in newer formats."
+              .format(fwsigfile.name))
 
     if (po.verbose > 0):
         print("{}: Unpacking image...".format(fwsigfile.name))
@@ -879,7 +930,8 @@ def imah_unsign(po, fwsigfile):
         header_digest.update(bytes(chunk))
         checksum_enc = imah_compute_checksum(po, bytes(chunk), checksum_enc)
     if (po.verbose > 2):
-        print("Computed header checksum 0x{:08X} and digest:\n{:s}".format(checksum_enc, ' '.join("{:02X}".format(x) for x in header_digest.digest())))
+        print("Computed header checksum 0x{:08X} and digest:\n{:s}"
+          .format(checksum_enc, ' '.join("{:02X}".format(x) for x in header_digest.digest())))
 
     if pkghead.signature_size != 256: # 2048 bit key length
         raise_or_warn(po, ValueError("Signed image file head signature has unexpected size."))
@@ -900,7 +952,8 @@ def imah_unsign(po, fwsigfile):
             header_signer = PKCS1_v1_5.new(auth_key)
             signature_match = header_signer.verify(header_digest, head_signature)
     except Exception as ex:
-        print("{}: Warning: Image file head signature verification caused cryptographic exception: {}".format(fwsigfile.name,str(ex)))
+        print("{}: Warning: Image file head signature verification caused cryptographic exception: {}"
+          .format(fwsigfile.name, str(ex)))
         signature_match = False
     if signature_match:
         if (po.verbose > 1):
@@ -924,7 +977,8 @@ def imah_unsign(po, fwsigfile):
             print("{}: Encrypted data checksum 0x{:08X} matches.".format(fwsigfile.name, checksum_enc))
     else:
         if (po.verbose > 1):
-            print("{}: Encrypted data checksum 0x{:08X}, expected 0x{:08X}.".format(fwsigfile.name, checksum_enc, pkghead.encr_cksum))
+            print("{}: Encrypted data checksum 0x{:08X}, expected 0x{:08X}."
+              .format(fwsigfile.name, checksum_enc, pkghead.encr_cksum))
         raise_or_warn(po, ValueError("Encrypted data checksum verification failed."))
 
     # Prepare array of names; "0" will mean empty index
@@ -945,7 +999,8 @@ def imah_unsign(po, fwsigfile):
                     break
             # Show warning the first time duplicate is found
             if (miname_suffix == 97):
-                eprint("{}: Warning: Found multiple chunks '{:s}'; invalid signed image.".format(fwsigfile.name,miname))
+                eprint("{}: Warning: Found multiple chunks '{:s}'; invalid signed image."
+                  .format(fwsigfile.name, miname))
             minames[i] = miname+chr(miname_suffix)
         minames_seen.add(minames[i])
     minames_seen = None
@@ -962,13 +1017,13 @@ def imah_unsign(po, fwsigfile):
     single_cipher = None # IMaH v1 creates a new cipher for each chunk, IMaH v2 reuses a single cipher
     for i, chunk in enumerate(chunks):
 
-        chunk_fname= "{:s}_{:s}.bin".format(po.mdprefix,minames[i])
+        chunk_fname = "{:s}_{:s}.bin".format(po.mdprefix, minames[i])
 
         if (chunk.attrib & 0x01) or (pkghead.enc_key == b''): # Not encrypted chunk
             cipher = PlainCopyCipher()
             pad_cnt = 0
             if (po.verbose > 0):
-                print("{}: Unpacking plaintext chunk '{:s}'...".format(fwsigfile.name,minames[i]))
+                print("{}: Unpacking plaintext chunk '{:s}'...".format(fwsigfile.name, minames[i]))
             can_decrypt = True
 
         elif crypt_key is not None: # Encrypted chunk (have key as well)
@@ -987,16 +1042,17 @@ def imah_unsign(po, fwsigfile):
                 dji_block_size = AES.block_size
             pad_cnt = (dji_block_size - chunk.size % dji_block_size) % dji_block_size
             if (po.verbose > 0):
-                print("{}: Unpacking encrypted chunk '{:s}'...".format(fwsigfile.name,minames[i]))
+                print("{}: Unpacking encrypted chunk '{:s}'...".format(fwsigfile.name, minames[i]))
             can_decrypt = True
 
         else: # Missing encryption key
-            eprint("{}: Warning: Cannot decrypt chunk '{:s}'; crypto config missing.".format(fwsigfile.name,minames[i]))
+            eprint("{}: Warning: Cannot decrypt chunk '{:s}'; crypto config missing."
+              .format(fwsigfile.name, minames[i]))
             if (not po.force_continue):
                 num_skipped += 1
                 continue
             if (po.verbose > 0):
-                print("{}: Copying still encrypted chunk '{:s}'...".format(fwsigfile.name,minames[i]))
+                print("{}: Copying still encrypted chunk '{:s}'...".format(fwsigfile.name, minames[i]))
             cipher = PlainCopyCipher()
             pad_cnt = (AES.block_size - chunk.size % AES.block_size) % AES.block_size
             can_decrypt = False
@@ -1018,7 +1074,7 @@ def imah_unsign(po, fwsigfile):
             # ie AES.block_size is fixed at 16 bytes
             copy_buffer = fwsigfile.read(min(1024 * 1024, remain_enc_n))
             if not copy_buffer:
-                eprint("{}: Warning: Chunk '{:s}' truncated.".format(fwsigfile.name,minames[i]))
+                eprint("{}: Warning: Chunk '{:s}' truncated.".format(fwsigfile.name, minames[i]))
                 num_skipped += 1
                 break
             remain_enc_n -= len(copy_buffer)
@@ -1034,16 +1090,21 @@ def imah_unsign(po, fwsigfile):
                 remain_dec_n = 0
         fwitmfile.close()
 
-    print("{}: Un-signed {:d} chunks, skipped/truncated {:d} chunks.".format(fwsigfile.name,len(chunks)-num_skipped, num_skipped))
+    print("{}: Un-signed {:d} chunks, skipped/truncated {:d} chunks."
+      .format(fwsigfile.name,len(chunks)-num_skipped, num_skipped))
     if pkgformat < 2018:
-        pass # No checksums are used in these formats
+        pass  # No checksums are used in these formats
     elif pkghead.plain_cksum == checksum_dec:
         if (po.verbose > 1):
             print("{}: Decrypted chunks checksum 0x{:08X} matches.".format(fwsigfile.name, checksum_dec))
     else:
         if (po.verbose > 1):
-            print("{}: Decrypted chunks checksum 0x{:08X}, expected 0x{:08X}.".format(fwsigfile.name, checksum_dec, pkghead.plain_cksum))
+            print("{}: Decrypted chunks checksum 0x{:08X}, expected 0x{:08X}."
+              .format(fwsigfile.name, checksum_dec, pkghead.plain_cksum))
         raise_or_warn(po, ValueError("Decrypted chunks checksum verification failed."))
+    if num_skipped > 0:
+        raise_or_warn(po, ValueError("Some chunks were not extracted correctly."))
+
 
 def imah_sign(po, fwsigfile):
     # Read headers from INI files
@@ -1065,23 +1126,23 @@ def imah_sign(po, fwsigfile):
     crypt_key, crypt_mode, crypt_iv = imah_get_crypto_params(po, pkghead)
     # Write module data
     checksum_dec = 0
-    single_cipher = None # IMaH v1 creates a new cipher for each chunk, IMaH v2 reuses a single cipher
+    single_cipher = None  # IMaH v1 creates a new cipher for each chunk, IMaH v2 reuses a single cipher
     payload_digest = SHA256.new()
     for i, miname in enumerate(minames):
         chunk = chunks[i]
         chunk.offset = fwsigfile.tell() - pkghead.header_size - pkghead.signature_size
         if miname == "0":
             if (po.verbose > 0):
-                print("{}: Empty chunk index {:d}".format(fwsigfile.name,i))
+                print("{}: Empty chunk index {:d}".format(fwsigfile.name, i))
             continue
 
         if (chunk.attrib & 0x01) or (pkghead.enc_key == b''): # Not encrypted chunk
             cipher = PlainCopyCipher()
             if (po.verbose > 0):
-                print("{}: Packing plaintext chunk '{:s}'...".format(fwsigfile.name,minames[i]))
+                print("{}: Packing plaintext chunk '{:s}'...".format(fwsigfile.name, minames[i]))
             can_decrypt = True
 
-        elif crypt_key != None: # Encrypted chunk (have key as well)
+        elif crypt_key is not None: # Encrypted chunk (have key as well)
             if crypt_mode == AES.MODE_CTR:
                 if single_cipher is None:
                     init_cf = int.from_bytes(crypt_iv[12:16], byteorder='big')
@@ -1093,21 +1154,22 @@ def imah_sign(po, fwsigfile):
             else:
                 cipher = AES.new(crypt_key, crypt_mode, iv=crypt_iv)
             if (po.verbose > 0):
-                print("{}: Packing and encrypting chunk '{:s}'...".format(fwsigfile.name,minames[i]))
+                print("{}: Packing and encrypting chunk '{:s}'...".format(fwsigfile.name, minames[i]))
             can_decrypt = True
 
         else: # Missing encryption key
-            eprint("{}: Warning: Cannot encrypt chunk '{:s}'; crypto config missing.".format(fwsigfile.name,minames[i]))
+            eprint("{}: Warning: Cannot encrypt chunk '{:s}'; crypto config missing."
+              .format(fwsigfile.name, minames[i]))
             raise_or_warn(po, ValueError("Unsupported encryption configuration."))
             if (po.verbose > 0):
-                print("{}: Copying already encrypted chunk '{:s}'...".format(fwsigfile.name,minames[i]))
+                print("{}: Copying already encrypted chunk '{:s}'...".format(fwsigfile.name, minames[i]))
             cipher = PlainCopyCipher()
             can_decrypt = False
 
         if (po.verbose > 1):
             print(str(chunk))
 
-        chunk_fname= "{:s}_{:s}.bin".format(po.mdprefix,miname)
+        chunk_fname = "{:s}_{:s}.bin".format(po.mdprefix, miname)
         # Copy chunk data and compute digest
         fwitmfile = open(chunk_fname, "rb")
         # Chunks in new formats are padded with zeros and then encrypted; for older formats,
@@ -1144,7 +1206,7 @@ def imah_sign(po, fwsigfile):
         # Update size of the chunk in header; skip that if the chunk was pre-encrypted and correct size was stored in INI
         if can_decrypt or chunk.size == 0:
             chunk.size = decrypted_n
-        elif  (decrypted_n <= chunk.size) or (decrypted_n >= chunk.size + dji_block_size):
+        elif (decrypted_n <= chunk.size) or (decrypted_n >= chunk.size + dji_block_size):
             eprint("{}: Warning: Chunk '{:s}' size from INI is incorrect, ignoring".format(fwsigfile.name,minames[i]))
             chunk.size = decrypted_n
         chunks[i] = chunk
@@ -1156,7 +1218,8 @@ def imah_sign(po, fwsigfile):
             print("{}: Decrypted chunks checksum 0x{:08X} stored".format(fwsigfile.name, checksum_dec))
     pkghead.payload_digest = (c_ubyte * 32)(*list(payload_digest.digest()))
     if (po.verbose > 2):
-        print("{}: Computed payload digest:\n{:s}".format(fwsigfile.name, ' '.join("{:02X}".format(x) for x in pkghead.payload_digest)))
+        print("{}: Computed payload digest:\n{:s}".format(fwsigfile.name,
+          ' '.join("{:02X}".format(x) for x in pkghead.payload_digest)))
 
     # Compute encrypted data checksum; cannot do that during encryption as we
     # need header with all fields filled, except of the checksum ofc.
@@ -1194,11 +1257,13 @@ def imah_sign(po, fwsigfile):
     for i, chunk in enumerate(chunks):
         header_digest.update(bytes(chunk))
     if (po.verbose > 2):
-        print("{}: Computed header digest:\n{:s}".format(fwsigfile.name, ' '.join("{:02X}".format(x) for x in header_digest.digest())))
+        print("{}: Computed header digest:\n{:s}".format(fwsigfile.name,
+          ' '.join("{:02X}".format(x) for x in header_digest.digest())))
 
     auth_key = imah_get_auth_params(po, pkghead)
     if not hasattr(auth_key, 'd'):
-        raise ValueError("Cannot compute image file head signature, auth key '{:s}' has no private part.".format(pkghead.auth_key.decode("utf-8")))
+        raise ValueError("Cannot compute image file head signature, auth key '{:s}' has no private part."
+          .format(pkghead.auth_key.decode("utf-8")))
 
     if pkgformat >= 2018:
         mgf = lambda x, y: pss.MGF1(x, y, SHA256)
@@ -1214,39 +1279,39 @@ def main():
 
     Its task is to parse command line options and call a function which performs requested command.
     """
+    parser = argparse.ArgumentParser(description=__doc__.split('.')[0])
 
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('-i', '--sigfile', default="", type=str,
+          help=("directory and file name of signed and encrypted IM*H firmware module "
+            "(default is base name of mdprefix with extension sig appended, in working dir)"))
 
-    parser.add_argument("-i", "--sigfile", default="", type=str,
-          help="signed and encrypted IM*H firmware module file")
+    parser.add_argument('-m', '--mdprefix', default="", type=str,
+          help=("directory and file name prefix for the single un-signed and unencrypted firmware module "
+            "(default is base name of sigfile with extension stripped, in working dir)"))
 
-    parser.add_argument("-m", "--mdprefix", default="", type=str,
-          help="file name prefix for the single un-signed and unencrypted " \
-           "firmware module (defaults to base name of signed firmware file)")
-
-    parser.add_argument("-f", "--force-continue", action="store_true",
+    parser.add_argument('-f', '--force-continue', action='store_true',
           help="force continuing execution despite warning signs of issues")
 
-    parser.add_argument("-r", "--random-scramble", action="store_true",
+    parser.add_argument('-r', '--random-scramble', action='store_true',
           help="while signing, use random scramble vector instead of from INI")
 
-    parser.add_argument("-k", "--key-select", default=[], action='append',
+    parser.add_argument('-k', '--key-select', default=[], action='append',
           help=("select a specific key to be used for given four character code, "
-          "if multiple keys match this fourcc"))
+            "if multiple keys match this fourcc"))
 
-    parser.add_argument("-v", "--verbose", action="count", default=0,
+    parser.add_argument('-v', '--verbose', action='count', default=0,
           help="increases verbosity level; max level is set by -vvv")
 
     subparser = parser.add_mutually_exclusive_group(required=True)
 
-    subparser.add_argument("-u", "--unsign", action="store_true",
+    subparser.add_argument('-u', '--unsign', action='store_true',
           help="un-sign and decrypt the firmware module")
 
-    subparser.add_argument("-s", "--sign", action="store_true",
+    subparser.add_argument('-s', '--sign', action='store_true',
           help="sign and encrypt the firmware module")
 
-    subparser.add_argument("--version", action='version', version="%(prog)s {version} by {author}"
-            .format(version=__version__,author=__author__),
+    subparser.add_argument('--version', action='version', version="%(prog)s {version} by {author}"
+            .format(version=__version__, author=__author__),
           help="display version information and exit")
 
     po = parser.parse_args()
@@ -1258,33 +1323,25 @@ def main():
     po.show_multiple_keys_warn = True
 
     if po.unsign:
-
         if (po.verbose > 0):
             print("{}: Opening for extraction and un-signing".format(po.sigfile))
-        fwsigfile = open(po.sigfile, "rb")
-
-        imah_unsign(po, fwsigfile)
-
-        fwsigfile.close();
+        with open(po.sigfile, 'rb') as fwsigfile:
+            imah_unsign(po, fwsigfile)
 
     elif po.sign:
-
         if (po.verbose > 0):
             print("{}: Opening for creation and signing".format(po.sigfile))
-        fwsigfile = open(po.sigfile, "w+b")
-
-        imah_sign(po, fwsigfile)
-
-        fwsigfile.close();
+        with open(po.sigfile, 'w+b') as fwsigfile:
+            imah_sign(po, fwsigfile)
 
     else:
+        raise NotImplementedError("Unsupported command.")
 
-        raise NotImplementedError('Unsupported command.')
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     try:
         main()
     except Exception as ex:
         eprint("Error: "+str(ex))
-        #raise
+        if 0: raise
         sys.exit(10)

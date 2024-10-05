@@ -92,7 +92,7 @@ import hashlib
 import argparse
 
 def eprint(*args, **kwargs):
-  print(*args, file=sys.stderr, **kwargs)
+    print(*args, file=sys.stderr, **kwargs)
 
 class DecoratedEnum(enum.Enum):
     @classmethod
@@ -154,6 +154,7 @@ class CHIP_TYPE(DecoratedEnum):
     BQ4050		= 0x019e34 # hw marking bq9000;
     BQ769x2		= 0x017692 # hw marking bq7692; BQ76942/BQ76952
 
+
 CHIP_TYPE.AUTO.__doc__		= "Automatic detection of the chip"
 CHIP_TYPE.SBS.__doc__		= "Generic chip with SBS support"
 CHIP_TYPE.BQGENERIC.__doc__	= "Unidentified chip from TI BQ family"
@@ -191,6 +192,7 @@ CHIP_TYPE.BQ40z60.__doc__	= "Texas Instruments BQ40z60 chip"
 CHIP_TYPE.BQ40z80.__doc__	= "Texas Instruments BQ40z70/BQ40z80 chip"
 CHIP_TYPE.BQ4050.__doc__	= "Texas Instruments BQ4050 chip"
 CHIP_TYPE.BQ769x2.__doc__	= "Texas Instruments BQ76942/BQ76952 chip"
+
 
 class SBS_COMMAND(DecoratedEnum):
     """ Smart Battery Data Specification 1.1 commands list
@@ -253,7 +255,89 @@ class MANUFACTURER_ACCESS_CMD_BQGENERIC(DecoratedEnum):
     HardwareVersion			= 0x03
 
 
-MANUFACTURER_ACCESS_CMD_BQ_INFO = {
+class SBS_FLAG_BATTERY_MODE(DecoratedEnum):
+    """ Flags used in BatteryMode command
+    """
+    INTERNAL_CHARGE_CONTROLLER	= 0
+    PRIMARY_BATTERY_SUPPORT		= 1
+    RESERVED2					= 2
+    RESERVED3					= 3
+    RESERVED4					= 4
+    RESERVED5					= 5
+    RESERVED6					= 6
+    CONDITION_FLAG				= 7
+    CHARGE_CONTROLLER_ENABLED	= 8
+    PRIMARY_BATTERY				= 9
+    RESERVED10					= 10
+    RESERVED11					= 11
+    RESERVED12					= 12
+    ALARM_MODE					= 13
+    CHARGER_MODE				= 14
+    CAPACITY_MODE				= 15
+
+
+class SBS_FLAG_BATTERY_STATUS(DecoratedEnum):
+    """ Flags used in BatteryStatus command
+    """
+    ERROR_CODE					= 0
+    FULLY_DISCHARGED			= 4
+    FULLY_CHARGED				= 5
+    DISCHARGING					= 6
+    INITIALIZED					= 7
+    REMAINING_TIME_ALARM		= 8
+    REMAINING_CAPACITY_ALARM	= 9
+    RESERVED10					= 10
+    TERMINATE_DISCHARGE_ALARM	= 11
+    OVERTEMPERATURE_ALARM		= 12
+    RESERVED13					= 13
+    TERMINATE_CHARGE_ALARM		= 14
+    OVER_CHARGED_ALARM			= 15
+
+
+class SBS_FLAG_SPECIFICATION_INFO(DecoratedEnum):
+    """ Flags used in SpecificationInfo command
+    """
+    Revision					= 0
+    Version						= 4
+    VScale						= 8
+    IPScale						= 12
+
+
+class MONITOR_GROUP(DecoratedEnum):
+    """ List of groups of commands/offsets.
+    """
+    DeviceInfo       = 0x00
+    UsageInfo        = 0x01
+    ComputedInfo     = 0x02
+    StatusBits       = 0x03
+    AtRates          = 0x04
+    BQStatusBits     = 0x06
+    BQStatusBitsMA   = 0x07
+    BQCellVoltages   = 0x08
+    BQLifetimeData   = 0x09
+    BQLifetimeDataMA = 0x0a
+    ImpedanceTrack   = 0x0b
+    ImpedanceTrackMA = 0x0c
+    BQTurboMode      = 0x0f
+
+
+# Global variables, modified by chip drivers
+MANUFACTURER_ACCESS_CMD_BQ_INFO = {}
+MANUFACTURER_BLOCK_ACCESS_CMD_BQ_INFO = {}
+SBS_BATTERY_MODE_INFO = {}
+SBS_BATTERY_STATUS_INFO = {}
+SBS_SPECIFICATION_INFO = {}
+SBS_CMD_INFO = {}
+RAW_ADDRESS_SPACE_KIND_INFO = {}
+SBS_CMD_GROUPS = {}
+SBS_SEALING = {}
+
+
+def reset_default_driver(po):
+  """ Sets global variables to no chip-specific driver loaded state.
+  """
+  global MANUFACTURER_ACCESS_CMD_BQ_INFO
+  MANUFACTURER_ACCESS_CMD_BQ_INFO = {
     MANUFACTURER_ACCESS_CMD_BQGENERIC.ManufacturerData : {
         'type'	: "uint16",
         'unit'	: {'scale':1,'name':"hex"},
@@ -282,35 +366,14 @@ MANUFACTURER_ACCESS_CMD_BQ_INFO = {
         'access_per_seal'	: ("r","r","r",),
         'desc'	: ("The IC hardware revision."),
     },
+  }
 
-}
+  global MANUFACTURER_BLOCK_ACCESS_CMD_BQ_INFO
+  MANUFACTURER_BLOCK_ACCESS_CMD_BQ_INFO = {
+  }
 
-
-MANUFACTURER_BLOCK_ACCESS_CMD_BQ_INFO = {
-}
-
-
-class SBS_FLAG_BATTERY_MODE(DecoratedEnum):
-    """ Flags used in BatteryMode command
-    """
-    INTERNAL_CHARGE_CONTROLLER	= 0
-    PRIMARY_BATTERY_SUPPORT		= 1
-    RESERVED2					= 2
-    RESERVED3					= 3
-    RESERVED4					= 4
-    RESERVED5					= 5
-    RESERVED6					= 6
-    CONDITION_FLAG				= 7
-    CHARGE_CONTROLLER_ENABLED	= 8
-    PRIMARY_BATTERY				= 9
-    RESERVED10					= 10
-    RESERVED11					= 11
-    RESERVED12					= 12
-    ALARM_MODE					= 13
-    CHARGER_MODE				= 14
-    CAPACITY_MODE				= 15
-
-SBS_BATTERY_MODE_INFO = {
+  global SBS_BATTERY_MODE_INFO
+  SBS_BATTERY_MODE_INFO = {
     SBS_FLAG_BATTERY_MODE.INTERNAL_CHARGE_CONTROLLER : {
         # Data type associated with the field
         # For strings, it also contains expected length (which can be exceeeded,
@@ -504,32 +567,15 @@ SBS_BATTERY_MODE_INFO = {
             "whereas a linear supply is better represented by a constant "
             "current model."),
     },
-}
+  }
 
-
-class SBS_FLAG_BATTERY_STATUS(DecoratedEnum):
-    """ Flags used in BatteryStatus command
-    """
-    ERROR_CODE					= 0
-    FULLY_DISCHARGED			= 4
-    FULLY_CHARGED				= 5
-    DISCHARGING					= 6
-    INITIALIZED					= 7
-    REMAINING_TIME_ALARM		= 8
-    REMAINING_CAPACITY_ALARM	= 9
-    RESERVED10					= 10
-    TERMINATE_DISCHARGE_ALARM	= 11
-    OVERTEMPERATURE_ALARM		= 12
-    RESERVED13					= 13
-    TERMINATE_CHARGE_ALARM		= 14
-    OVER_CHARGED_ALARM			= 15
-
-SBS_BATTERY_STATUS_INFO = {
+  global SBS_BATTERY_STATUS_INFO
+  SBS_BATTERY_STATUS_INFO = {
     SBS_FLAG_BATTERY_STATUS.ERROR_CODE : {
         'type'	: "named_bitfield",
         'unit'	: {'scale':1,'name':"dec"},
         'nbits'	: 4,
-        'value_names'	: ["OK", "Busy", "Reserved Cmd", "Unsupported Cmd", 
+        'value_names'	: ["OK", "Busy", "Reserved Cmd", "Unsupported Cmd",
             "Access Denied", "Over/Underflow", "Bad Size", "Unknown Error"],
         'access'	: "r",
         'tiny_name'	: "EC",
@@ -654,17 +700,10 @@ SBS_BATTERY_STATUS_INFO = {
         'tiny_name'	: "OCA",
         'desc'	: ("Battery is fully charged. Stop charging."),
     },
-}
+  }
 
-class SBS_FLAG_SPECIFICATION_INFO(DecoratedEnum):
-    """ Flags used in SpecificationInfo command
-    """
-    Revision					= 0
-    Version						= 4
-    VScale						= 8
-    IPScale						= 12
-
-SBS_SPECIFICATION_INFO = {
+  global SBS_SPECIFICATION_INFO
+  SBS_SPECIFICATION_INFO = {
     SBS_FLAG_SPECIFICATION_INFO.Revision : {
         'type'	: "int_bitfield",
         'unit'	: {'scale':1,'name':"dec"},
@@ -703,10 +742,10 @@ SBS_SPECIFICATION_INFO = {
         'desc'	: ("Current/capacity scaling exp. Multiplies currents "
             "and capacities by 10 ^ IPScale."),
     },
-}
+  }
 
-
-SBS_CMD_INFO = {
+  global SBS_CMD_INFO
+  SBS_CMD_INFO = {
     SBS_COMMAND.ManufacturerAccess : {
         # Data type associated with the function
         'type'	: "uint16",
@@ -1061,31 +1100,13 @@ SBS_CMD_INFO = {
             "discharge, etc."),
         'getter'	: "simple",
     },
+  }
 
-}
+  global RAW_ADDRESS_SPACE_KIND_INFO
+  RAW_ADDRESS_SPACE_KIND_INFO = {}
 
-
-RAW_ADDRESS_SPACE_KIND_INFO = {}
-
-
-class MONITOR_GROUP(DecoratedEnum):
-    """ List of groups of commands/offsets.
-    """
-    DeviceInfo	= 0x00
-    UsageInfo	= 0x01
-    ComputedInfo= 0x02
-    StatusBits	= 0x03
-    AtRates		= 0x04
-    BQStatusBits	= 0x06
-    BQStatusBitsMA	= 0x07
-    BQCellVoltages	= 0x08
-    BQLifetimeData	= 0x09
-    BQLifetimeDataMA	= 0x0a
-    ImpedanceTrack	= 0x0b
-    ImpedanceTrackMA	= 0x0c
-    BQTurboMode	= 0x0f
-
-SBS_CMD_GROUPS = {
+  global SBS_CMD_GROUPS
+  SBS_CMD_GROUPS = {
     MONITOR_GROUP.DeviceInfo : (
         SBS_COMMAND.ManufactureDate,
         SBS_COMMAND.SerialNumber,
@@ -1127,8 +1148,12 @@ SBS_CMD_GROUPS = {
         SBS_COMMAND.AtRateToEmpty,
         SBS_COMMAND.AtRateOK,
     ),
-}
+  }
 
+  global SBS_SEALING
+  SBS_SEALING = {}
+
+  pass # reset_default_driver() ends
 
 class ChipMock(object):
     def __init__(self, bus, chip=None):
@@ -1140,7 +1165,7 @@ class ChipMock(object):
     def prep_static(self):
         # Only commands required to chip detection;
         # After detection, imported chip file will replace this
-        self.add_read_sub(0x00, 0x02, bytes.fromhex( \
+        self.add_read_sub(0x00, 0x02, bytes.fromhex(
           "0550 0036 0034 00 0380 0001 0083")) # FirmwareVersion
 
     def add_read(self, register, data):
@@ -1232,6 +1257,9 @@ class SMBusMock(object):
     def write_word_data(self, i2c_addr, register, value, force=None):
         self.do_mock_write(i2c_addr, register, struct.pack('<H', value))
 
+    def write_dword_data(self, i2c_addr, register, value, force=None):
+        self.do_mock_write(i2c_addr, register, struct.pack('<L', value))
+
     def process_call(self, i2c_addr, register, value, force=None):
         pass
 
@@ -1261,11 +1289,11 @@ class SMBusMock(object):
                 is_read = True
         # msg stays assigned from last iteration
         if is_read:
-            data = self.do_mock_read(msg.addr, register, \
+            data = self.do_mock_read(msg.addr, register,
               is_block=self.expect_block)
             msg.buf = data
         else:
-            self.do_mock_write(msg.addr, register, msg.buf[1:], \
+            self.do_mock_write(msg.addr, register, msg.buf[1:],
               is_block=self.expect_block)
 
     def add_mock_read(self, register, data):
@@ -1284,7 +1312,7 @@ class SMBusMock(object):
             resp_type = 'byte[]'
         else:
             resp_type = cmdinf['type']
-        self.expect_block = (resp_type.startswith("byte[") or \
+        self.expect_block = (resp_type.startswith("byte[") or
           resp_type.startswith("string") or resp_type.endswith("_blk"))
 
     def prep_mock_read(self, cmd, subcmd=None):
@@ -1301,7 +1329,7 @@ class SMBusMock(object):
         data = self.mock.do_read(i2c_addr, register)
         if is_block: data = bytes([len(data)]) + data
         if is_block and self.pec:
-            whole_packet = smbus_recreate_read_packet_data(i2c_addr, \
+            whole_packet = smbus_recreate_read_packet_data(i2c_addr,
               register, data)
             pec = crc8_ccitt_compute(whole_packet)
             data = data + bytes([pec])
@@ -1326,7 +1354,7 @@ class SMBusMock(object):
 def crc8_ccitt_byte(crc, dt):
     """ Add one byte to smbus PEC crc-8 calculation
     """
-    ncrc = crc ^ dt;
+    ncrc = crc ^ dt
     for i in range(8):
         if ( ncrc & 0x80 ) != 0:
             ncrc <<= 1
@@ -1506,7 +1534,7 @@ def smbus_write_raw(bus, dev_addr, b, po):
                 (v,) = struct.unpack('<H', bytearray(bytes(b[1:]) + b'\0')[0:2])
                 bus.write_word_data(dev_addr, b[0], v)
             else:
-                raise NotImplementedError(\
+                raise NotImplementedError(
                   "No way of sending such raw data via smbus api")
         finally:
             bus.pec = orig_pec
@@ -1537,7 +1565,7 @@ def smbus_read_word(bus, dev_addr, cmd, resp_type, po):
         bus.i2c_rdwr(part_write, part_read)
         b = bytes(part_read)
         if (po.verbose > 2):
-            print("Raw {} response: {}".format(cmd.name, \
+            print("Raw {} response: {}".format(cmd.name,
               " ".join('{:02x}'.format(x) for x in b)))
         if len(b) > 2:
             whole_packet = smbus_recreate_read_packet_data(dev_addr, cmd, b[0:2])
@@ -1548,8 +1576,8 @@ def smbus_read_word(bus, dev_addr, cmd, resp_type, po):
                   ).format(resp_type,cmd.name))
         v = bytes_to_type_str(b[0:2], resp_type)
     else:
-        raise NotImplementedError(("Unsupported bus API type '{}'"
-          ).format(po.api_type))
+        raise NotImplementedError("Unsupported bus API type '{}'"
+          .format(po.api_type))
     return v
 
 
@@ -1564,11 +1592,11 @@ def smbus_read_long(bus, dev_addr, cmd, resp_type, po):
         bus.i2c_rdwr(part_write, part_read)
         b = bytes(part_read)
     else:
-        raise NotImplementedError(("Unsupported bus API type '{}'"
-          ).format(po.api_type))
+        raise NotImplementedError("Unsupported bus API type '{}'"
+          .format(po.api_type))
 
     if (po.verbose > 2):
-        print("Raw {} response: {}".format(cmd.name, \
+        print("Raw {} response: {}".format(cmd.name,
           " ".join('{:02x}'.format(x) for x in b)))
 
     if len(b) > 4:
@@ -1594,7 +1622,7 @@ def smbus_read_block_for_basecmd(bus, dev_addr, cmd, basecmd_name, resp_type, po
         b = bus.read_i2c_block_data(dev_addr, cmd.value, expect_len)
     elif po.api_type == "i2c":
         # 36 = 32 sbs max len +2 subcmd +1 length, +1 PEC
-        expect_len = min(expect_len+ 1 + (1 if bus.pec else 0), 36)
+        expect_len = min(expect_len + 1 + (1 if bus.pec else 0), 36)
         part_write = i2c_msg.write(dev_addr, [cmd.value])
         part_read = i2c_msg.read(dev_addr, expect_len)
         bus.i2c_rdwr(part_write, part_read)
@@ -1630,24 +1658,24 @@ def smbus_read_block_for_basecmd(bus, dev_addr, cmd, basecmd_name, resp_type, po
         bus.i2c_rdwr(part_write, part_read)
         b = bytes(part_read)
     else:
-        raise NotImplementedError(("Unsupported bus API type '{}'"
-          ).format(po.api_type))
+        raise NotImplementedError("Unsupported bus API type '{}'"
+          .format(po.api_type))
 
     if (po.verbose > 2):
-        print("Raw {} response: {}".format(basecmd_name, \
+        print("Raw {} response: {}".format(basecmd_name,
           " ".join('{:02x}'.format(x) for x in b)))
 
     if len(b) < b[0] + 1:
-        raise ValueError(("Received {} from command {} has invalid length"
-          ).format(resp_type,basecmd_name))
+        raise ValueError("Received {} from command {} has invalid length"
+          .format(resp_type,basecmd_name))
 
     # check PEC crc-8 byte (unless the packet was so long that we didn't receive it)
     if len(b) >= b[0] + 2:
         whole_packet = smbus_recreate_read_packet_data(dev_addr, cmd, b[0:b[0]+1])
         pec = crc8_ccitt_compute(whole_packet)
         if b[b[0]+1] != pec:
-            raise ValueError(("Received {} from command {} with wrong PEC checksum"
-              ).format(resp_type,basecmd_name))
+            raise ValueError("Received {} from command {} with wrong PEC checksum"
+              .format(resp_type,basecmd_name))
 
     # prepare data part of the message
     v = bytes(b[1:b[0]+1])
@@ -1703,13 +1731,42 @@ def smbus_write_word(bus, dev_addr, cmd, v, val_type, po):
         raise NotImplementedError("Unsupported bus API type '{}'".format(po.api_type))
 
 
+def smbus_write_long(bus, dev_addr, cmd, v, val_type, po):
+    if po.api_type == "smbus":
+        if val_type in ("int32",): # signed type support
+            if v < 0:
+                v += 0x100000000
+        if v < 0 or v > 0xFFFFFFFF:
+            raise ValueError((
+              "Value to write for command {} is beyond type {} bounds"
+              ).format(cmd.name,val_type))
+        if (po.verbose > 2):
+            print("Write {}: {:02x} LONG=0x{:x}".format(cmd.name, cmd.value, v))
+        bus.write_dword_data(dev_addr, cmd.value, v)
+    elif po.api_type == "i2c":
+        b = type_str_to_bytes(v, val_type, endian="le")
+        if (po.verbose > 2):
+            print("Write {}: CMD={:02x} LONG={}".format(cmd.name,
+              cmd.value, " ".join('{:02x}'.format(x) for x in b)))
+        if bus.pec:
+            whole_packet = smbus_recreate_write_packet_data(dev_addr, cmd, b)
+            pec = crc8_ccitt_compute(whole_packet)
+            b = bytes([cmd.value]) + b + bytes([pec])
+        else:
+            b = bytes([cmd.value]) + b
+        part_write = i2c_msg.write(dev_addr, b)
+        bus.i2c_rdwr(part_write)
+    else:
+        raise NotImplementedError("Unsupported bus API type '{}'".format(po.api_type))
+
+
 def smbus_write_block_for_basecmd(bus, dev_addr, cmd, v, basecmd_name, val_type, po):
     """ Write block to cmd, use basecmd_name for logging
     """
     b = v
     if po.api_type == "smbus":
         if (po.verbose > 2):
-            print("Write {}: {:02x} BLOCK={}".format(basecmd_name, \
+            print("Write {}: {:02x} BLOCK={}".format(basecmd_name,
               cmd.value, " ".join('{:02x}'.format(x) for x in b)))
         bus.write_block_data(dev_addr, cmd.value, b)
     elif po.api_type == "i2c":
@@ -1859,7 +1916,7 @@ def smbus_perform_unseal_bq_2word_sckey(bus, dev_addr, cmd, resp_wait, sec_key_w
     # sent within 4 sec.
     subcmdinf = {
         'type'	: "void",
-        'unit'	: {'scale':None,'name':"hex"},
+        'unit'	: {'scale':None, 'name':"hex"},
         'tiny_name'	: "SKeyUD",
         'desc'	: "Word of Security key.",
     }
@@ -2193,7 +2250,7 @@ def parse_sbs_command_value(cmd, subcmdinf, v, u, po):
 
 
 def is_printable_value_unit(uname):
-    return uname not in ("boolean","hex","hexver","dec","dec02","dec04","date547","str","bitfields","struct",)
+    return uname not in ("boolean", "hex", "hexver", "dec", "dec02", "dec04", "date547", "str", "bitfields", "struct",)
 
 
 def command_value_to_string(cmdinf, subcmdinf, u, v, po):
@@ -2281,7 +2338,7 @@ def print_sbs_command_short_subfields(field_groups, l, fields_info, cell_width, 
             fldt = {}
             if display_mode == 1:
                 fldt['str'] = "{}={}".format(fldinf['tiny_name'],val)
-                fldt['color'] = 34 if ("r" not in fldinf['access']) else 31 if val!=0 else 32
+                fldt['color'] = 34 if ("r" not in fldinf['access']) else 31 if val != 0 else 32
             else:
                 if isinstance(val, list) or isinstance(val, bytes):
                     fldt['str'] = "{}={}".format(fldinf['tiny_name'],"".join('{:02x}'.format(x) for x in val))
@@ -2374,8 +2431,8 @@ def sbs_command_add_shift(cmd, cmdinf, cmd_shift, po):
         raise ValueError("Tried to add shift to non-array command '{}'".format(cmd.name))
     cmd_array_len = cmdinf['cmd_array']
     if (cmd_shift < 0) or (cmd_shift >= cmd_array_len):
-        raise ValueError("Command {} array shift {} out of bounds".format(cmd.name,cmd_shift))
-    return ImprovisedCommand(value=cmd.value+cmd_shift, name="{}{}".format(cmd.name,cmd_shift))
+        raise ValueError("Command {} array shift {} out of bounds".format(cmd.name, cmd_shift))
+    return ImprovisedCommand(value=cmd.value+cmd_shift, name="{}{}".format(cmd.name, cmd_shift))
 
 
 def sbs_subcommand_get_info(cmd, subcmd):
@@ -2463,20 +2520,23 @@ def smbus_write_by_writing_word_subcmd_first(bus, dev_addr, cmd, subcmd, subcmdi
             else:
                 v = v // stor_unit['scale']
         else:
-            raise ValueError("Cannot apply scaling to non-numeric value of {}.{} command".format(cmd.name,subcmd.name))
-
+            raise ValueError("Cannot apply scaling to non-numeric value of {}.{} command"
+              .format(cmd.name,subcmd.name))
 
     if (stor_type.startswith("byte[") or stor_type.startswith("string") or
       stor_type.endswith("_blk") or stor_type in ("void",)):
-        smbus_write_block_val_by_writing_word_subcmd_first(bus, dev_addr, cmd, subcmd, v, stor_type, stor_cmd, stor_wait, po)
+        smbus_write_block_val_by_writing_word_subcmd_first(bus, dev_addr,
+          cmd, subcmd, v, stor_type, stor_cmd, stor_wait, po)
     else:
-        raise ValueError("Command {}.{} type {} not supported in sub-command write".format(cmd.name,subcmd.name,stor_type))
+        raise ValueError("Command {}.{} type {} not supported in sub-command write"
+          .format(cmd.name, subcmd.name, stor_type))
 
     return stor_unit['name']
 
 
 def smbus_read_macblk_by_writing_block_subcmd_first(bus, dev_addr, cmd, subcmd, subcmdinf, po):
-    """ Reads value of a sub-command by writing the subcmd index, then reading response which starts with the sub-command.
+    """ Reads value of a sub-command by writing the subcmd index,
+    then reading response which starts with the sub-command.
 
     This is used to access ManufacturerBlockAccess sub-commands of the battery.
     Handles value scaling and its conversion to bytes. Handles retries as well.
@@ -2495,9 +2555,11 @@ def smbus_read_macblk_by_writing_block_subcmd_first(bus, dev_addr, cmd, subcmd, 
         bus.prep_mock_read(cmd, subcmd)
 
     if (resp_type.startswith("byte[") or resp_type.startswith("string") or resp_type.endswith("_blk")):
-        v = smbus_read_macblock_val_by_writing_block_subcmd_first(bus, dev_addr, cmd, subcmd, resp_type, resp_cmd, resp_wait, po)
+        v = smbus_read_macblock_val_by_writing_block_subcmd_first(bus, dev_addr,
+          cmd, subcmd, resp_type, resp_cmd, resp_wait, po)
     else:
-        raise ValueError("Command {}.{} type {} not supported in block sub-command read".format(cmd.name,subcmd.name,resp_type))
+        raise ValueError("Command {}.{} type {} not supported in block sub-command read"
+          .format(cmd.name,subcmd.name,resp_type))
 
     resp_unit = subcmdinf['unit']
     if (resp_unit['scale'] is not None) and (resp_unit['scale'] != 1):
@@ -2530,14 +2592,16 @@ def smbus_write_macblk_with_block_subcmd_first(bus, dev_addr, cmd, subcmd, subcm
             else:
                 v = v // stor_unit['scale']
         else:
-            raise ValueError("Cannot apply scaling to non-numeric value of {}.{} command".format(cmd.name,subcmd.name))
-
+            raise ValueError("Cannot apply scaling to non-numeric value of {}.{} command"
+              .format(cmd.name,subcmd.name))
 
     if (stor_type.startswith("byte[") or stor_type.startswith("string") or
       stor_type.endswith("_blk") or stor_type in ("void",)):
-        smbus_write_macblock_val_adding_block_subcmd_first(bus, dev_addr, cmd, subcmd, v, stor_type, stor_wait, po)
+        smbus_write_macblock_val_adding_block_subcmd_first(bus, dev_addr,
+          cmd, subcmd, v, stor_type, stor_wait, po)
     else:
-        raise ValueError("Command {}.{} type {} not supported in block sub-command write".format(cmd.name,subcmd.name,stor_type))
+        raise ValueError("Command {}.{} type {} not supported in block sub-command write"
+          .format(cmd.name,subcmd.name,stor_type))
 
     return stor_unit['name']
 
@@ -2555,7 +2619,8 @@ def smbus_read(bus, dev_addr, cmd, opts, vals, po):
         retry_count = 3
 
     if (po.verbose > 1):
-        print("Reading {} command at addr=0x{:x}, cmd=0x{:x}, type={}, opts={}".format(cmdinf['getter'], dev_addr, cmd.value, cmdinf['type'], opts))
+        print("Reading {} command at addr=0x{:x}, cmd=0x{:x}, type={}, opts={}"
+          .format(cmdinf['getter'], dev_addr, cmd.value, cmdinf['type'], opts))
 
     # If reading from array-like command, hand-craft our own which includes the shift
     if 'cmd_shift' in opts:
@@ -2914,11 +2979,12 @@ def smart_battery_system_last_error(bus, dev_addr, vals, po):
     """ Reads and prints value of last ERROR_CODE from the battery.
     """
     cmd = SBS_COMMAND.BatteryStatus
+    subcmd = None
     fld = SBS_FLAG_BATTERY_STATUS.ERROR_CODE
     fldinf = SBS_BATTERY_STATUS_INFO[fld]
     val = None
     try:
-        v, l, u, s = smbus_read(bus, dev_addr, cmd, {'subcmd': None,'retry_count':1}, vals, po)
+        v, l, u, s = smbus_read(bus, dev_addr, cmd, {'subcmd': subcmd,'retry_count':1}, vals, po)
         response = {'val':v,'list':l,'sinf':s,'uname':u,}
         vals[cmd if subcmd is None else subcmd] = response
         val = l[fld]['val']
@@ -2957,7 +3023,8 @@ def smart_battery_system_info(cmd_str, vals, po):
         if len(set(aps)) <= 1:
             print("  Always '{}'".format(aps[0].upper()))
         else:
-            print("  Sealed '{}'; Unsealed  '{}'; Full Access  '{}'".format(aps[0].upper(),aps[1].upper(),aps[2].upper()))
+            print("  Sealed '{}'; Unsealed  '{}'; Full Access  '{}'"
+              .format(aps[0].upper(), aps[1].upper(), aps[2].upper()))
         gtr = subcmdinf['getter'] if 'getter' in subcmdinf else cmdinf['getter']
 
         if gtr == "simple":
@@ -3264,15 +3331,18 @@ def smart_battery_system_sealing(seal_str, vals, po):
 
     if auth == "SHA-1/HMAC":
         time.sleep(0.35)
-        smbus_perform_unseal_bq_sha1_hmac(bus, po.dev_address, cmd, subcmd, resp_type, resp_cmd, resp_wait, po.sha1key, po)
+        smbus_perform_unseal_bq_sha1_hmac(bus, po.dev_address,
+          cmd, subcmd, resp_type, resp_cmd, resp_wait, po.sha1key, po)
         time.sleep(0.35)
     elif auth == "2-Word SCKey": # Two word key, where first word is written as MAC sub-command
         time.sleep(0.35)
-        smbus_perform_unseal_bq_2word_sckey(bus, po.dev_address, cmd, resp_wait, (po.i32key) & 0xffff, (po.i32key>>16) & 0xffff, vals, po)
+        smbus_perform_unseal_bq_2word_sckey(bus, po.dev_address,
+          cmd, resp_wait, (po.i32key) & 0xffff, (po.i32key>>16) & 0xffff, vals, po)
         time.sleep(0.35)
     else: # No auth required - sealing or checking status
         if resp_type == "void":
-            smbus_write_raw_block_by_writing_word_subcmd(bus, po.dev_address, cmd, subcmd, b'', resp_type, resp_cmd, resp_wait, po)
+            smbus_write_raw_block_by_writing_word_subcmd(bus, po.dev_address,
+              cmd, subcmd, b'', resp_type, resp_cmd, resp_wait, po)
         else:
             raise ValueError("No auth, but not void command; not sure what to do")
 
@@ -3378,12 +3448,16 @@ def parse_monitor_group(s):
     """
     return s
 
+driver_cache = dict()
 
-def main():
+def main(argv=sys.argv[1:]):
     """ Main executable function.
 
       Its task is to parse command line options and call a function which performs sniffing.
     """
+
+    global driver_cache
+
     addrspace_datatypes = [ "int8", "uint8", "int16", "uint16", "int32", "uint32", "float", 'string[n]', 'byte[n]']
 
     parser = argparse.ArgumentParser(description=__doc__.split('.')[0])
@@ -3399,9 +3473,10 @@ def main():
 
     parser.add_argument('-c', '--chip', metavar='model', choices=[i.name for i in CHIP_TYPE],
             type=parse_chip_type,  default=CHIP_TYPE.AUTO.name,
-            help="target chip model; one of: {:s} (defaults to '%(default)s')".format(', '.join(i.name for i in CHIP_TYPE)))
+            help="target chip model; one of: {:s} (defaults to '%(default)s')"
+              .format(', '.join(i.name for i in CHIP_TYPE)))
 
-    parser.add_argument("--dry-run", action="store_true",
+    parser.add_argument("--dry-run", action='store_true',
             help="do not use real smbus device or do permanent changes")
 
     parser.add_argument('-v', '--verbose', action='count', default=0,
@@ -3409,21 +3484,19 @@ def main():
 
     subparser = parser.add_mutually_exclusive_group()
 
-    subparser.add_argument('-s', '--short', action="store_true",
+    subparser.add_argument('-s', '--short', action='store_true',
             help="display only minimal description of values; to be used by "
               "experienced users, who have no need for additional info")
 
-    subparser.add_argument('-e', '--explain', action="store_true",
+    subparser.add_argument('-e', '--explain', action='store_true',
             help="explain each value by providing description from spec")
 
-    parser.add_argument("--version", action='version', version="%(prog)s {version} by {author}"
-              .format(version=__version__,author=__author__),
+    parser.add_argument('--version', action='version', version="%(prog)s {version} by {author}"
+              .format(version=__version__, author=__author__),
             help="display version information and exit")
 
-
     subparsers = parser.add_subparsers(dest='action', metavar='action',
-            help="action to take")
-
+            help="action to take", required=True)
 
     subpar_info = subparsers.add_parser('info',
             help=("displays information about specific command; when chip "
@@ -3435,12 +3508,10 @@ def main():
             help=("the command/offset name to show info about; "
               "use 'info-list' action to see supported commands"))
 
-
     subpar_info_list = subparsers.add_parser('info-list',
             help=("lists all commands on which 'info' action can be used; "
               "the list changes with selected chip type; when chip auto-detect "
               "is disabled, this action can be performed without connection"))
-
 
     subpar_read = subparsers.add_parser('read',
             help="read value from a single command/offset of the battery")
@@ -3449,12 +3520,10 @@ def main():
             help=("the command/offset name to read from; "
               "use 'read-list' action to see supported commands"))
 
-
     subpar_read_list = subparsers.add_parser('read-list',
             help=("lists all commands on which 'read' action can be used; "
               "the list changes with selected chip type; when chip auto-detect "
               "is disabled, this action can be performed without connection"))
-
 
     subpar_trigger = subparsers.add_parser('trigger',
             help="write to a trigger, command/offset of the battery which acts as a switch")
@@ -3463,12 +3532,10 @@ def main():
             help=("the command/offset name to trigger; "
               "use 'trigger-list' action to see supported commands"))
 
-
     subpar_trigger_list = subparsers.add_parser('trigger-list',
             help=("lists all commands on which 'trigger' action can be used; "
               "the list changes with selected chip type; when chip auto-detect "
               "is disabled, this action can be performed without connection"))
-
 
     subpar_write = subparsers.add_parser('write',
             help="write value to a single command/offset of the battery")
@@ -3480,12 +3547,10 @@ def main():
     subpar_write.add_argument('newvalue', metavar='value', type=str,
             help="new value to write to the command/offset")
 
-
     subpar_write_list = subparsers.add_parser('write-list',
             help=("lists all commands on which 'write' action can be used; "
               "the list changes with selected chip type; when chip auto-detect "
               "is disabled, this action can be performed without connection"))
-
 
     subpar_raw_read = subparsers.add_parser('raw-read',
             help="read raw value from an address space of the battery")
@@ -3498,14 +3563,13 @@ def main():
             help="address within the space to read from")
 
     subpar_raw_read.add_argument('dttype', metavar='datatype', type=parse_addrspace_datatype,
-            help="Data type at target offset; one of: {:s}".format(', '.join(addrspace_datatypes)))
+            help="data type at target offset; one of: {:s}".format(', '.join(addrspace_datatypes)))
 
 
     subpar_raw_read_list = subparsers.add_parser('raw-read-list',
             help=("lists all address spaces on which 'raw-read' action can be used; "
               "the list changes with selected chip type; when chip auto-detect "
               "is disabled, this action can be performed without connection"))
-
 
     subpar_raw_write = subparsers.add_parser('raw-write',
             help="write raw value into an address space of the battery")
@@ -3523,12 +3587,10 @@ def main():
     subpar_raw_write.add_argument('newvalue', metavar='value', type=str,
             help="new value to write at the address")
 
-
     subpar_raw_write_list = subparsers.add_parser('raw-write-list',
             help=("lists all address spaces on which 'raw-write' action can be used; "
               "the list changes with selected chip type; when chip auto-detect "
               "is disabled, this action can be performed without connection"))
-
 
     subpar_raw_backup = subparsers.add_parser('raw-backup',
             help="read whole raw address space and store it in a file")
@@ -3540,7 +3602,6 @@ def main():
     subpar_raw_backup.add_argument('fname', metavar='filename', type=str,
             help="name of the file to write to")
 
-
     subpar_raw_restore = subparsers.add_parser('raw-restore',
             help="write whole raw address space using values from a file")
 
@@ -3551,14 +3612,13 @@ def main():
     subpar_raw_restore.add_argument('fname', metavar='filename', type=str,
             help="name of the file to read from")
 
-
     subpar_monitor = subparsers.add_parser('monitor',
             help=("monitor value of a group of commands/offsets; "
               "just reads all of the values from a group"))
 
-    subpar_monitor.add_argument('cmdgroup', metavar='group', choices=[i.name for i in MONITOR_GROUP], type=parse_monitor_group,
+    subpar_monitor.add_argument('cmdgroup', metavar='group',
+            choices=[i.name for i in MONITOR_GROUP], type=parse_monitor_group,
             help="group of commands/offsets; one of: {:s}".format(', '.join(i.name for i in MONITOR_GROUP)))
-
 
     subpar_sealing = subparsers.add_parser('sealing',
             help="change sealing state of BQ chip")
@@ -3575,7 +3635,7 @@ def main():
               "(defaults to 0x{:08x} for FullAccess, otherwise to 0x{:08x})"
               ).format(0xffffffff,0x36720414))
 
-    po = parser.parse_args();
+    po = parser.parse_args(argv)
 
     vals = {}
 
@@ -3593,24 +3653,34 @@ def main():
             print("Opening {}".format(po.bus))
         smbus_open(po.bus, po)
 
+    # Re-init global variables; then they are modified by specific chip driver, do it before detection
+    reset_default_driver(po)
     if po.chip == CHIP_TYPE.AUTO:
         po.chip = smart_battery_detect(vals, po)
 
-    if po.chip in (CHIP_TYPE.BQ30z50, CHIP_TYPE.BQ30z55, CHIP_TYPE.BQ30z554,):
-        fnames = ["comm_sbs_chips/{}.py".format("BQ30z554")]
-    elif po.chip in (CHIP_TYPE.BQ40z50,):
-        fnames = ["comm_sbs_chips/{}.py".format("BQ40z50")]
+    if po.chip in driver_cache:
+        chip_file_code = driver_cache[po.chip]
+        exec(chip_file_code)
     else:
-        fnames = ["comm_sbs_chips/{}.py".format(po.chip.name)]
-    for fname in fnames:
-        try:
-            with open(fname, "rb") as source_file:
-                chip_file_code = compile(source_file.read(), fname, "exec")
-            if (po.verbose > 0):
-                print("Importing {}".format(fname))
-            exec(chip_file_code)
-        except IOError:
-            print("Warning: Could not open chip definition file '{}'".format(fname))
+        if po.chip in (CHIP_TYPE.BQ30z50, CHIP_TYPE.BQ30z55, CHIP_TYPE.BQ30z554,):
+            fnames = ["comm_sbs_chips/{}.py".format("BQ30z554")]
+        elif po.chip in (CHIP_TYPE.BQ40z50,):
+            fnames = ["comm_sbs_chips/{}.py".format("BQ40z50")]
+        elif po.chip in ("SBS",):    # default
+            pass # do nothing, already loaded with reset_default_driver(po)
+        else:
+            fnames = ["comm_sbs_chips/{}.py".format(po.chip.name)]
+        driver_cache[po.chip] = list()
+        for fname in fnames:
+            try:
+                with open(fname, "rb") as source_file:
+                    chip_file_code = compile(source_file.read(), fname, "exec")
+                if (po.verbose > 0):
+                    print("Importing {}".format(fname))
+                exec(chip_file_code)
+                driver_cache[po.chip] = chip_file_code
+            except IOError:
+                print("Warning: Could not open chip definition file '{}'".format(fname))
 
     if po.action == 'info':
         smart_battery_system_info(po.command, vals, po)
@@ -3670,7 +3740,7 @@ def main():
                 po.i32key = 0x36720414
         smart_battery_system_sealing(po.sealstate, vals, po)
     else:
-        raise NotImplementedError('Unsupported command.')
+        raise NotImplementedError("Unsupported or missing command.")
 
     if not po.offline_mode:
         smbus_close()
@@ -3681,5 +3751,5 @@ if __name__ == '__main__':
         main()
     except Exception as ex:
         eprint("Error: "+str_exception_with_type(ex))
-        raise
+        if 0: raise
         sys.exit(10)

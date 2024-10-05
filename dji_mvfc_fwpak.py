@@ -35,7 +35,8 @@ import binascii
 import time
 import argparse
 from Crypto.Cipher import AES
-from ctypes import *
+from ctypes import c_char, c_int, c_ubyte, c_ushort, c_uint, c_ulonglong, c_float
+from ctypes import memmove, addressof, sizeof, Array, LittleEndianStructure
 from os.path import basename
 
 encrypt_key = bytes([0x96, 0x70, 0x9a, 0xD3, 0x26, 0x67, 0x4A, 0xC3, 0x82, 0xB6, 0x69, 0x27, 0xE6, 0xd8, 0x84, 0x21])
@@ -46,16 +47,18 @@ def eprint(*args, **kwargs):
 
 class EncHeader(LittleEndianStructure):
     _pack_ = 1
-    _fields_ = [('target', c_ubyte),                #0
-                ('unk0', c_uint),                   #1  Always 0x01000001
-                ('version', c_ubyte * 4),           #5
-                ('unk1', c_ubyte),                  #9  Always 0x01
-                ('size', c_uint),                   #10
-                ('unk2', c_uint),                   #14 Always 0x00000000
-                ('time', c_uint),                   #18
-                ('unk3', c_ubyte),                  #22 Always 0x04
-                ('md5', c_ubyte * 16),              #23
-                ('crc16', c_ushort)]                #39 end is 41
+    _fields_ = [
+        ('target', c_ubyte),           # 0
+        ('unk0', c_uint),              # 1  Always 0x01000001
+        ('version', c_ubyte * 4),      # 5
+        ('unk1', c_ubyte),             # 9  Always 0x01
+        ('size', c_uint),              # 10
+        ('unk2', c_uint),              # 14 Always 0x00000000
+        ('time', c_uint),              # 18
+        ('unk3', c_ubyte),             # 22 Always 0x04
+        ('md5', c_ubyte * 16),         # 23
+        ('crc16', c_ushort),           # 39 end is 41
+    ]
 
     def __init__(self):
         self.unk0 = 0x01000001
@@ -190,6 +193,7 @@ def unpack(args):
 
     return
 
+
 def pack(args):
     header = EncHeader()
 
@@ -206,21 +210,21 @@ def pack(args):
         raise ValueError("Unknown target: '{}'".format(args.target))
 
     # Timestamp
-    if args.time == None:
+    if args.time is None:
         header.time = int(time.time())
     else:
         if args.time.isdigit():
             t = int(args.time, 10)
         else:
             t = time.strptime(args.time, '%Y-%m-%d %H:%M:%S')
-            if t == None:
+            if t is None:
                 raise ValueError("Wrong format for time: '{}'".format(args.time))
             t = int(time.mktime(t))
 
         header.time = t
 
     ver = re.search('^v(\d+).(\d+).(\d+).(\d+)$', args.fwver)
-    if ver == None:
+    if ver is None:
         raise ValueError("Wrong firmware version string format (vAA.BB.CC.DD): '{}'".format(args.fwver))
 
     # Store module version
@@ -270,81 +274,88 @@ def pack(args):
 
     args.output.close()
 
-    print("{}: Encrypted file to '{}'".format(args.input.name,args.output.name))
+    print("{}: Encrypted file to '{}'".format(args.input.name, args.output.name))
+
 
 def main():
     """ Main executable function.
 
     Its task is to parse command line options and call a function which performs requested command.
     """
-    # Parse command line options
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.split('.')[0])
 
     subparsers = parser.add_subparsers(dest='cmd')
 
-    parser.add_argument("-v", "--verbose", action="count", default=0,
+    parser.add_argument('-v', '--verbose', action='count', default=0,
           help="increases verbosity level; max level is set by -vvv")
 
-    parser.add_argument("-f", "--force-continue", action="store_true",
-            help="force continuing execution despite warning signs of issues")
+    parser.add_argument('-f', '--force-continue', action='store_true',
+          help="force continuing execution despite warning signs of issues")
 
-    parser_dec = subparsers.add_parser('dec', help='Decrypt')
+    parser_dec = subparsers.add_parser('dec',
+          help="decrypt")
     parser_dec.add_argument('-i', '--input', required=True, type=argparse.FileType('rb'),
-            help='name of the input encrypted FC firmware file')
+          help="name of the input encrypted FC firmware file")
     parser_dec.add_argument('-o', '--output', type=argparse.FileType('wb'),
-            help='name of the output decrypted firmware file')
+          help="name of the output decrypted firmware file")
 
-    parser_enc = subparsers.add_parser('enc', help='Encrypt')
+    parser_enc = subparsers.add_parser('enc',
+          help="encrypt")
     parser_enc.add_argument('-i', '--input', required=True, type=argparse.FileType('rb'),
-            help='name of the input unencrypted FC firmware file')
+          help="name of the input unencrypted FC firmware file")
     parser_enc.add_argument('-o', '--output', type=argparse.FileType('wb'),
-            help='name of the output encrypted firmware file')
+          help="name of the output encrypted firmware file")
     parser_enc.add_argument('-T', '--time',
-            help='Timestamp. If omitted the current time will be used. The timestamp ' + \
-             'is either a number (seconds since epoch) or in the following format: ' + \
-             '"year-month-day hour:min:sec"' )
+          help=("timestamp; if omitted, the current time will be used; the timestamp "
+             "is either a number (seconds since epoch) or in the following format: "
+             "\"year-month-day hour:min:sec\""))
     parser_enc.add_argument('-V', '--fwver', required=True,
-            help='firmware version string in the form "vAA.BB.CC.DD"')
+          help="firmware version string in the form \"vAA.BB.CC.DD\"")
     parser_enc.add_argument('-t', '--target', required=True,
-            help='either 0305 or 0306')
+          help="either 0305 or 0306")
 
     parser_inf = subparsers.add_parser('info',
-            help='show header information')
+          help="show header information")
     parser_inf.add_argument('-i', '--input', required=True, type=argparse.FileType('rb'),
-            help='input file')
+          help="input file")
+
     args = parser.parse_args()
 
     if args.cmd == 'info':
         if (args.verbose > 0):
             print("{}: Opening for info display".format(args.input.name))
         unpack(args)
+
     elif args.cmd == 'dec':
         if (args.verbose > 0):
             print("{}: Opening for decryption".format(args.input.name))
-        if args.output == None:
+        if args.output is None:
             if ".encrypted." in basename(args.input.name):
                 file_out = basename(args.input.name).replace(".encrypted", "")
             else:
-                file_out = os.path.splitext(basename(args.input.name))[0] + '.decrypted.bin'
-            args.output = open(file_out, "wb")
+                file_out = os.path.splitext(basename(args.input.name))[0] + ".decrypted.bin"
+            args.output = open(file_out, 'wb')
         unpack(args)
+
     elif args.cmd == 'enc':
         if (args.verbose > 0):
             print("{}: Opening for encryption".format(args.input.name))
-        if args.output == None:
+        if args.output is None:
             if ".decrypted." in basename(args.input.name):
                 file_out = basename(args.input.name).replace(".decrypted", "")
             else:
-                file_out = os.path.splitext(basename(args.input.name))[0] + '.encrypted.bin'
-            args.output = open(file_out, "wb")
+                file_out = os.path.splitext(basename(args.input.name))[0] + ".encrypted.bin"
+            args.output = open(file_out, 'wb')
         pack(args)
+
     else:
         raise NotImplementedError("Unknown command: '{}'.".format(args.cmd))
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     try:
         main()
     except Exception as ex:
         eprint("Error: "+str(ex))
-        #raise
+        if 0: raise
         sys.exit(10)

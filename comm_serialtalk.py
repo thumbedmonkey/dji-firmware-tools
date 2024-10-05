@@ -27,13 +27,11 @@ __version__ = "0.6.0"
 __author__ = "Mefistotelis @ Original Gangsters"
 __license__ = "GPL"
 
-import os
+import argparse
 import io
 import sys
 import time
-import select
-import argparse
-from ctypes import *
+from ctypes import sizeof
 
 sys.path.insert(0, './')
 from comm_dat2pcap import (
@@ -81,7 +79,7 @@ class SerialMock(io.RawIOBase):
         self._txData.append(btarr)
 
     def read( self, n=1 ):
-        if time.time() < self._wait_time: return  b""
+        if time.time() < self._wait_time: return b""
         self._wait_time = time.time() + 0.05
         if len(self._rxData) < 1: return b""
         btarr = self._rxData[0][0:n]
@@ -123,7 +121,8 @@ class SerialBulkWrap():
         return btarr
 
     def close(self):
-        pass
+        import usb.util
+        usb.util.dispose_resources(self.dev)
 
     def reset_input_buffer(self):
         pass
@@ -132,55 +131,98 @@ class SerialBulkWrap():
     def in_waiting(self):
         return 1
 
+
 def find_correct_device(dev):
     # Ugly way of finding the correct bulk device.
+    # I truly wish this would be simpler.
     import usb.util
+
     for d in dev:
         for cfg in d:
-            for intf in cfg:
-                for endp in intf:
-                    if usb.util.endpoint_direction(endp.bEndpointAddress) == usb.util.ENDPOINT_IN:
-                        if endp.bEndpointAddress == 0x85:
-                            return d
+            # see if we can get the interface description.
+            interface_description = usb.util.get_string(d, cfg.iConfiguration)
+
+            if "," in interface_description:
+                # UAVs
+                # They may have multiple "bulk" intefaces (all with the same
+                # bInterfaceSubClass), so we need to look for the "ACM" one
+                # (which is the DUML BULK interface)
+                interface_descriptions = interface_description.split(",")
+                try:
+                    interface_for_acm = interface_descriptions.index("acm") + 1
+                except ValueError:
+                    print("no ACM (bulk) interface here.")
+                    continue
+                print("using bInterfaceNumber %d" % interface_for_acm)
+                for intf in cfg:
+                    if intf.bInterfaceNumber == interface_for_acm:
+                        assert intf.bInterfaceSubClass == 0x43, "we expect the ACM inteface to be of the right bInterfaceSubclass"
+                        return intf
+            elif "_" in interface_description:
+
+                # RM330: "mtp_bulk_adb"
+                #   Interface 0: mtp
+                #   Interface 1: bulk
+                #   Interface 2: adb
+
+                # but:
+                # RM510: "mtp_bulk_adb"
+                #   Interface 0: bulk
+                #   Interface 1: mtp
+                #   Interface 2: adb
+
+                # So we resort to look for a bulk interface based on subclass.
+                # (Same strategy doesn't work on e.g. wm260 because they
+                # have multiple bulk interfaces with the same subclass.)
+
+                interface_descriptions = interface_description.split("_")
+                if "bulk" in interface_descriptions:
+                    interface_for_acm = interface_descriptions.index("bulk")
+                    for intf in cfg:
+                        if intf.bInterfaceSubClass == 0x43:
+                            return intf
+                else:
+                    print("no BULK interface here.")
+                    continue
+            else:
+                print("can't parse", interface_descriptions)
+                continue
+
     return None
+
 
 def open_usb(po):
     import usb.core
     import usb.util
     import usb.backend.libusb0 as myusb
-    mybackend=myusb.get_backend()
-    dev = usb.core.find(idVendor=0x2ca3, idProduct=0x0022, find_all = True, backend=mybackend)
-    dev = find_correct_device(dev)
 
-    if dev:
-        cfg = dev.get_active_configuration()
-        
-        if sys.platform in ('win32', 'win64'):
-            intf = cfg[(0,0)]
-        else:
-            intf = cfg[(4,0)]
-            
+    mybackend = myusb.get_backend()
+    dev = usb.core.find(idVendor=0x2ca3, find_all = True, backend=mybackend)
+    intf = find_correct_device(dev)
 
-        ep_out = usb.util.find_descriptor(
-            intf,
-            # match the first OUT endpoint
-            custom_match = \
-            lambda e: \
-                usb.util.endpoint_direction(e.bEndpointAddress) == \
-                usb.util.ENDPOINT_OUT)
+    assert intf is not None, "Could not find any DJI BULK device"
 
-        ep_in = usb.util.find_descriptor(
-            intf,
-            # match the first OUT endpoint
-            custom_match = \
-            lambda e: \
-                usb.util.endpoint_direction(e.bEndpointAddress) == \
-                usb.util.ENDPOINT_IN)
+    ep_out = usb.util.find_descriptor(
+        intf,
+        # match the first OUT endpoint
+        custom_match = \
+        lambda e: \
+            usb.util.endpoint_direction(e.bEndpointAddress) == \
+            usb.util.ENDPOINT_OUT)
+
+    ep_in = usb.util.find_descriptor(
+        intf,
+        # match the first OUT endpoint
+        custom_match = \
+        lambda e: \
+            usb.util.endpoint_direction(e.bEndpointAddress) == \
+            usb.util.ENDPOINT_IN)
 
     if dev and ep_in and ep_out:
         return SerialBulkWrap(dev,ep_in,ep_out, po.timeout)
     else:
-        sys.exit(0)
+        assert False, "Could not find endpoints for bulk interface"
+
 
 def do_read_packets(ser, state, info):
     out = ListFormatter()
@@ -196,11 +238,12 @@ def do_read_packets(ser, state, info):
             elif (is_packet_damaged(state)):
                 state = drop_packet(state)
         if (is_packet_at_finish(state)):
-            break;
+            break
         num_bytes = ser.in_waiting
         if ser.name == 'BULK':
             num_bytes = 0
     return state, out.pktlist, info
+
 
 def packet_header_is_reply_for_request(rplhdr, reqhdr, responsebit_check=False, seqnum_check=True):
     if (rplhdr.version != 1):
@@ -223,6 +266,7 @@ def packet_header_is_reply_for_request(rplhdr, reqhdr, responsebit_check=False, 
     #    return False
     return True
 
+
 def find_reply_for_request(po, pktlist, pktreq, seqnum_check=True):
     if len(pktlist) == 0:
         return None
@@ -235,6 +279,7 @@ def find_reply_for_request(po, pktlist, pktreq, seqnum_check=True):
             print("Received unrelated packet:")
             print(' '.join('{:02x}'.format(x) for x in pktrpl))
     return None
+
 
 def do_send_request(po, ser, pktprop):
     pktreq = encode_command_packet_en(pktprop.sender_type, pktprop.sender_index,
@@ -252,6 +297,7 @@ def do_send_request(po, ser, pktprop):
 
     return pktreq
 
+
 def do_receive_reply(po, ser, pktreq, seqnum_check=True):
     """ Receive reply after sending packet pktreq to interface ser.
     """
@@ -261,7 +307,7 @@ def do_receive_reply(po, ser, pktreq, seqnum_check=True):
 
     info = PktInfo()
 
-    state = PktState();
+    state = PktState()
     state.verbose = po.verbose
     state.pname = ser.port
     pktrpl = None
@@ -292,6 +338,7 @@ def do_receive_reply(po, ser, pktreq, seqnum_check=True):
             show_stats = False
 
     return pktrpl
+
 
 def do_send_request_receive_reply(po):
     if not po.bulk:
@@ -324,86 +371,87 @@ def do_send_request_receive_reply(po):
 
     ser.close()
 
+
 def main():
     """ Main executable function.
 
       Its task is to parse command line options and call a function which performs serial communication.
     """
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.split('.')[0])
 
     subparser = parser.add_mutually_exclusive_group(required=True)
 
     subparser.add_argument('--port', type=str,
-            help='the serial port to write to and read from')
+            help="the serial port to write to and read from")
 
     subparser.add_argument('--bulk', action='store_true',
-            help='use usb bulk instead of serial connection')
+            help="use usb bulk instead of serial connection")
 
     parser.add_argument('-b', '--baudrate', default=9600, type=int,
-            help='the baudrate to use for the serial port (default is %(default)s)')
+            help="the baudrate to use for the serial port (default is %(default)s)")
 
     parser.add_argument('-n', '--seq_num', default=0, type=int,
-            help='Sequence number of the packet (default is %(default)s)')
+            help="sequence number of the packet (default is %(default)s)")
 
     parser.add_argument('-u', '--pack_type', default="Request", type=parse_packet_type,
-            help='Packet Type, either name or number (default is %(default)s)')
+            help="packet Type, either name or number (default is %(default)s)")
 
     parser.add_argument('-a', '--ack_type', default="No_ACK_Needed", type=parse_ack_type,
-            help='Acknowledgement type, either name or number (default is %(default)s)')
+            help="acknowledgement type, either name or number (default is %(default)s)")
 
     parser.add_argument('-e', '--encrypt_type', default="NO_ENC", type=parse_encrypt_type,
-            help='Encryption type, either name or number (default is %(default)s)')
+            help="encryption type, either name or number (default is %(default)s)")
 
     parser.add_argument('-s', '--cmd_set', default="GENERAL", type=parse_cmd_set,
-            help='Command Set, either name or number (default is %(default)s)')
+            help="command Set, either name or number (default is %(default)s)")
 
     parser.add_argument('-i', '--cmd_id', default=0, type=int,
-            help='Command ID (default is %(default)s)')
+            help="command ID (default is %(default)s)")
 
     parser.add_argument('-w', '--timeout', default=2000, type=int,
-            help='how long to wait for answer, in miliseconds (default is %(default)s)')
+            help="how long to wait for answer, in miliseconds (default is %(default)s)")
 
     parser.add_argument('--loose-response', action="store_true",
-            help='use loosen criteria when searching for response to the packet')
+            help="use loosen criteria when searching for response to the packet")
 
     parser.add_argument('-v', '--verbose', action='count', default=0,
-            help='increases verbosity level; max level is set by -vvv')
+            help="increases verbosity level; max level is set by -vvv")
 
-    parser.add_argument("--version", action='version', version="%(prog)s {version} by {author}"
-              .format(version=__version__,author=__author__),
+    parser.add_argument('--version', action='version', version="%(prog)s {version} by {author}"
+              .format(version=__version__, author=__author__),
             help="display version information and exit")
 
     subparser = parser.add_mutually_exclusive_group()
 
     subparser.add_argument('-t', '--sender', type=parse_module_ident,
-            help='Sender Type and Index, in TTII form')
+            help="sender Type and Index, in TTII form")
 
     subparser.add_argument('-tt', '--sender_type', default="PC", type=parse_module_type,
-            help='Sender(transmitter) Type, either name or number (default is %(default)s)')
+            help="sender(transmitter) Type, either name or number (default is %(default)s)")
 
     parser.add_argument('-ti', '--sender_index', default=0, type=int,
-            help='Sender(transmitter) Index (default is %(default)s)')
+            help="sender(transmitter) Index (default is %(default)s)")
 
     subparser = parser.add_mutually_exclusive_group()
 
     subparser.add_argument('-r', '--receiver', type=parse_module_ident,
-            help='Receiver Type and Index, in TTII form (ie. 0300)')
+            help="receiver Type and Index, in TTII form (ie. 0300)")
 
     subparser.add_argument('-rt', '--receiver_type', default="ANY", type=parse_module_type,
-            help='Receiver Type, either name or number (default is %(default)s)')
+            help="receiver Type, either name or number (default is %(default)s)")
 
     parser.add_argument('-ri', '--receiver_index', default=0, type=int,
-            help='Receiver index (default is %(default)s)')
+            help="receiver index (default is %(default)s)")
 
     subparser = parser.add_mutually_exclusive_group()
 
     subparser.add_argument('-x', '--payload_hex', type=str,
-            help='provide payload as hex string')
+            help="provide payload as hex string")
 
     subparser.add_argument('-p', '--payload_bin', default="", type=str,
-            help='provide binary payload directly (default payload is empty)')
+            help="provide binary payload directly (default payload is empty)")
 
-    po = parser.parse_args();
+    po = parser.parse_args()
 
     if (po.payload_hex is not None):
         po.payload = bytes.fromhex(po.payload_hex)
@@ -420,10 +468,11 @@ def main():
 
     do_send_request_receive_reply(po)
 
+
 if __name__ == '__main__':
     try:
         main()
     except Exception as ex:
         eprint("Error: "+str(ex))
-        #raise
+        if 0: raise
         sys.exit(10)
